@@ -27,6 +27,7 @@ package net.runelite.client.plugins.grounditems;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.ImmutableList;
@@ -99,6 +100,7 @@ import net.runelite.client.util.ColorUtil;
 import net.runelite.client.util.QuantityFormatter;
 import net.runelite.client.util.RSTimeUnit;
 import net.runelite.client.util.Text;
+import org.jetbrains.annotations.NotNull;
 
 @PluginDescriptor(
 	name = "Ground Items",
@@ -141,6 +143,12 @@ public class GroundItemsPlugin extends Plugin
 
 	private List<String> hiddenItemList = new CopyOnWriteArrayList<>();
 	private List<String> highlightedItemsList = new CopyOnWriteArrayList<>();
+
+	private List<String> hiddenItemIdsStringList = new CopyOnWriteArrayList<>();
+	private List<String> highlightedItemIdsStringList = new CopyOnWriteArrayList<>();
+
+	private List<Integer> hiddenItemIdsList = new CopyOnWriteArrayList<>();
+	private List<Integer> highlightedItemIdsList = new CopyOnWriteArrayList<>();
 
 	@Inject
 	private GroundItemHotkeyListener hotkeyListener;
@@ -189,6 +197,8 @@ public class GroundItemsPlugin extends Plugin
 	private List<PriceHighlight> priceChecks = ImmutableList.of();
 	private LoadingCache<NamedQuantity, Boolean> highlightedItems;
 	private LoadingCache<NamedQuantity, Boolean> hiddenItems;
+	private LoadingCache<IdQuantity, Boolean> highlightedItemIds;
+	private LoadingCache<IdQuantity, Boolean> hiddenItemIds;
 	private final Map<WorldPoint, Lootbeam> lootbeams = new HashMap<>();
 
 	@Provides
@@ -218,6 +228,10 @@ public class GroundItemsPlugin extends Plugin
 		hiddenItems = null;
 		hiddenItemList = null;
 		highlightedItemsList = null;
+		hiddenItemIdsStringList = null;
+		highlightedItemIdsStringList = null;
+		hiddenItemIdsList = null;
+		highlightedItemIdsList = null;
 		collectedGroundItems.clear();
 		clientThread.invokeLater(this::removeAllLootbeams);
 	}
@@ -436,8 +450,38 @@ public class GroundItemsPlugin extends Plugin
 		// gets the hidden items from the text box in the config
 		hiddenItemList = Text.fromCSV(config.getHiddenItems());
 
+		// gets the hidden item IDs from the text box in the config
+		hiddenItemIdsStringList = Text.fromCSV(config.getHiddenItemIds());
+
 		// gets the highlighted items from the text box in the config
 		highlightedItemsList = Text.fromCSV(config.getHighlightItems());
+
+		// gets the highlighted item ids from the text box in the config
+		highlightedItemIdsStringList = Text.fromCSV(config.getHighLightItemIds());
+
+		// converts the hidden item ids from strings to integers
+		hiddenItemIdsList = hiddenItemIdsStringList.stream().map(Integer::parseInt).collect(Collectors.toList());
+
+		// converts the highlighted item ids from strings to integers
+		highlightedItemIdsList = highlightedItemIdsStringList.stream().map(Integer::parseInt).collect(Collectors.toList());
+
+		CacheLoader<IdQuantity, Boolean> highlightedItemIdsLoader = new CacheLoader<>()
+		{
+			@Override
+			public Boolean load(@NotNull IdQuantity idQuantity) throws Exception
+			{
+				return highlightedItemIdsList.contains(idQuantity.getId());
+			}
+		};
+
+		CacheLoader<IdQuantity, Boolean> hiddenItemIdsLoader = new CacheLoader<>()
+		{
+			@Override
+			public Boolean load(@NotNull IdQuantity idQuantity) throws Exception
+			{
+				return hiddenItemIdsList.contains(idQuantity.getId());
+			}
+		};
 
 		highlightedItems = CacheBuilder.newBuilder()
 			.maximumSize(512L)
@@ -448,6 +492,16 @@ public class GroundItemsPlugin extends Plugin
 			.maximumSize(512L)
 			.expireAfterAccess(10, TimeUnit.MINUTES)
 			.build(new WildcardMatchLoader(hiddenItemList));
+
+		highlightedItemIds = CacheBuilder.newBuilder()
+			.maximumSize(512L)
+			.expireAfterAccess(10, TimeUnit.MINUTES)
+			.build(highlightedItemIdsLoader);
+
+		hiddenItemIds = CacheBuilder.newBuilder()
+			.maximumSize(512L)
+			.expireAfterAccess(10, TimeUnit.MINUTES)
+			.build(hiddenItemIdsLoader);
 
 		// Cache colors
 		ImmutableList.Builder<PriceHighlight> priceCheckBuilder = ImmutableList.builder();
@@ -612,13 +666,14 @@ public class GroundItemsPlugin extends Plugin
 	{
 		Color itemColor = getItemColor(groundItem.getItemId());
 		var item = new NamedQuantity(groundItem);
-		if (TRUE.equals(highlightedItems.getUnchecked(item)))
+		var itemId = new IdQuantity(groundItem);
+		if (TRUE.equals(highlightedItems.getUnchecked(item)) || TRUE.equals(highlightedItemIds.getUnchecked(itemId)))
 		{
 			return itemColor != null ? itemColor : config.highlightedColor();
 		}
 
 		// Explicit hide takes priority over implicit highlight
-		if (TRUE.equals(hiddenItems.getUnchecked(item)))
+		if (TRUE.equals(hiddenItems.getUnchecked(item)) || TRUE.equals(hiddenItemIds.getUnchecked(itemId)))
 		{
 			return null;
 		}
@@ -644,8 +699,9 @@ public class GroundItemsPlugin extends Plugin
 	private Color getHidden(GroundItem groundItem)
 	{
 		var item = new NamedQuantity(groundItem);
-		final boolean isExplicitHidden = TRUE.equals(hiddenItems.getUnchecked(item));
-		final boolean isExplicitHighlight = TRUE.equals(highlightedItems.getUnchecked(item));
+		var itemId = new IdQuantity(groundItem);
+		final boolean isExplicitHidden = TRUE.equals(hiddenItems.getUnchecked(item)) || TRUE.equals(hiddenItemIds.getUnchecked(itemId));
+		final boolean isExplicitHighlight = TRUE.equals(highlightedItems.getUnchecked(item)) || TRUE.equals(highlightedItemIds.getUnchecked(itemId));
 		final boolean canBeHidden = groundItem.getGePrice() > 0 || groundItem.isTradeable() || !config.dontHideUntradeables();
 		final boolean underGe = groundItem.getGePrice() < config.getHideUnderValue();
 		final boolean underHa = groundItem.getHaPrice() < config.getHideUnderValue();
